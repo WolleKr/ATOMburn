@@ -1,0 +1,26 @@
+node_modules/
+.pnpm-store/
+
+# Reference checkouts are not required to build ATOMburn and are never packaged.
+/third_party/
+
+artifacts/**
+!artifacts/.gitkeep
+
+dist/
+out/
+coverage/
+*.tsbuildinfo
+*.log
+
+# Local release packages and isolated verification workspaces
+/output/
+/tmp/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
+desktop.ini

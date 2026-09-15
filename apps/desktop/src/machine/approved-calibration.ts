@@ -1,0 +1,1 @@
+export const H_LASER_02_CODE="M5\nS0\nG21\nG90\nM4 S0\nM5\nG0 X30 Y35\nM4 S200\nG1 X40 Y35 F600\nM5\nS0\nM5\nS0\n";

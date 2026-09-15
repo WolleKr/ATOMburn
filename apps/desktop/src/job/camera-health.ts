@@ -1,0 +1,2 @@
+export interface CameraHealth {state:"offline"|"live"|"stale"|"frozen";fps:number;ageMs?:number;}
+export function cameraHealth(frames:readonly number[],now=Date.now()):CameraHealth{if(!frames.length)return{state:"offline",fps:0};const recent=frames.slice(-20),last=recent.at(-1)!,ageMs=Math.max(0,now-last);if(ageMs>2000)return{state:"stale",fps:0,ageMs};if(recent.length>=3&&new Set(recent.slice(-3)).size===1)return{state:"frozen",fps:0,ageMs};const duration=Math.max(1,last-recent[0]!);return{state:"live",fps:Number(((recent.length-1)*1000/duration).toFixed(1)),ageMs};}

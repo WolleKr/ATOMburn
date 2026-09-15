@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs><radialGradient id="bg"><stop stop-color="#17232d"/><stop offset="1" stop-color="#090e13"/></radialGradient><linearGradient id="beam" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffb15e"/><stop offset=".35" stop-color="#ff5a2b"/><stop offset="1" stop-color="#ffcf83"/></linearGradient><filter id="glow"><feGaussianBlur stdDeviation="18" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+  <rect width="1024" height="1024" rx="184" fill="url(#bg)"/>
+  <g stroke="#4f8195" stroke-opacity=".28" fill="none"><path d="M80 192h864M80 832h864M192 80v864M832 80v864"/><circle cx="512" cy="512" r="360"/><circle cx="512" cy="512" r="280"/><path d="M512 96v832M96 512h832"/></g>
+  <g fill="#eef3f6" font-family="Segoe UI,Arial,sans-serif" font-size="220" font-weight="750" letter-spacing="8"><text x="124" y="598">AT</text><text x="600" y="598">OM</text></g>
+  <g filter="url(#glow)"><rect x="505" y="250" width="14" height="470" rx="7" fill="url(#beam)"/><circle cx="512" cy="724" r="28" fill="#ffd18c"/></g>
+  <path d="M268 760h488" stroke="#728692" stroke-width="18" stroke-linecap="round"/><path d="M432 238h160l-28 72H460z" fill="#26343d" stroke="#7f939e" stroke-width="8"/>
+</svg>

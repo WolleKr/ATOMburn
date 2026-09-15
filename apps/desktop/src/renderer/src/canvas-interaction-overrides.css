@@ -1,0 +1,11 @@
+/* The scissors tool must receive anchor clicks instead of the selection handles. */
+body:has(.tool-button--cut.tool-button--active) .selection-overlay {
+  pointer-events: none;
+}
+
+.trim-preview {
+  stroke: #ff3b30;
+  stroke-width: 3;
+  stroke-linecap: round;
+  pointer-events: none;
+}

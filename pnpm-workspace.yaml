@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  '@serialport/bindings-cpp': true
+  electron: true
+  esbuild: true
+minimumReleaseAgeExclude:
+  - globals@17.11.0
+  - '@testing-library/user-event@14.6.4'
+  - electron@43.4.0

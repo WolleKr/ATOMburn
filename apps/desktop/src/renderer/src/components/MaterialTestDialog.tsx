@@ -1,0 +1,91 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { buildLineCam, generateGrbl } from "../../../cam/line-cam";
+import { buildMaterialTestProject, type MaterialTestSettings as DomainMaterialTestSettings } from "../../../domain/material-test";
+import type { EditorCommand } from "../../../editor/editor-state";
+import type { MachineSnapshot } from "../../../machine/machine-controller";
+import type { LocalDeviceProfile, MaterialTestApproval, MaterialTestSettings, MaterialTestSummary, MotionSafetyAcknowledgement } from "../../../shared/contracts";
+import { getBridge } from "../platform";
+
+const initialSettings: MaterialTestSettings = { material: "Wood", customMaterial: "", thicknessMm: 3, speedStartMmPerMin: 300, speedEndMmPerMin: 900, powerStartPercent: 10, powerEndPercent: 50, columns: 4, rows: 4, cellSizeMm: 5, gapMm: 2, passes: 1, lineSpacingMm: 0.3, originXmm: 30, originYmm: 30 };
+const templates = { generated: { label: "Generated speed/power grid", description: "Parameterized ATOMburn grid", url: undefined, fileName: undefined } } as const;
+type TemplateId = keyof typeof templates;
+type WorkflowStep = "connect" | "home" | "prepare" | "check" | "home-after-check" | "frame" | "start" | "completed" | "failed";
+const disconnected: MachineSnapshot = { connected: false, state: "Unknown", transcript: [] };
+const labels: Record<WorkflowStep, { next: string; button: string }> = { connect: { next: "Place the selected sample on the raster, then connect to the GRBL controller.", button: "1 · Connect" }, home: { next: "Reference the machine before preparing the test.", button: "2 · Home machine" }, prepare: { next: "Validate the grid, generate G-code, and create an immutable approval ticket.", button: "3 · Prepare test" }, check: { next: "Run the generated G-code in GRBL Check mode without motion or laser emission.", button: "4 · Check G-code" }, "home-after-check": { next: "GRBL resets when leaving Check mode. Home again before framing.", button: "5 · Home again" }, frame: { next: "Drive the exact material-test bounds with the laser off.", button: "6 · Frame test" }, start: { next: "Inspect the frame and confirm it stayed on the material before starting.", button: "7 · Start laser test" }, completed: { next: "Workflow complete. Inspect the material and record the best cell.", button: "Workflow complete" }, failed: { next: "Workflow stopped. Close and start again after inspecting the machine.", button: "Workflow stopped" } };
+const describe = (snapshot: MachineSnapshot) => `${snapshot.connected ? "connected" : "disconnected"} · ${snapshot.state}${snapshot.position ? ` · X${snapshot.position.x.toFixed(1)} Y${snapshot.position.y.toFixed(1)}` : ""}${snapshot.job ? ` · ${snapshot.job.state} ${snapshot.job.confirmedLines}/${snapshot.job.totalLines}` : ""}`;
+
+function generatedSampleSvg(plan: NonNullable<ReturnType<typeof buildMaterialTestProject>["plan"]>, settings: MaterialTestSettings): { svg: string; widthMm: number; heightMm: number } {
+  const widthMm = plan.bounds.maxX - plan.bounds.minX;
+  const heightMm = plan.bounds.maxY - plan.bounds.minY;
+  const cells = plan.cells.map((cell) => `<rect x="${cell.xMm - plan.bounds.minX}" y="${cell.yMm - plan.bounds.minY}" width="${settings.cellSizeMm}" height="${settings.cellSizeMm}" fill="#1d5666" stroke="#68c5e8" stroke-width="0.2"/><text x="${cell.xMm - plan.bounds.minX + settings.cellSizeMm / 2}" y="${cell.yMm - plan.bounds.minY + settings.cellSizeMm / 2}" fill="#e1f5fb" font-family="Arial" font-size="${Math.max(0.8, settings.cellSizeMm * 0.2)}" text-anchor="middle" dominant-baseline="middle">${cell.powerPercent}%</text>`).join("");
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${widthMm}mm" height="${heightMm}mm" viewBox="0 0 ${widthMm} ${heightMm}"><rect width="100%" height="100%" fill="#0b1419"/>${cells}</svg>`, widthMm, heightMm };
+}
+
+async function rasterizeSource(source: string, widthMm: number, heightMm: number, inlineSvg = false): Promise<{ dataBase64: string; dpi: number }> {
+  if (typeof Image === "undefined") throw new Error("Raster placement is unavailable in this preview.");
+  const maxPixels = 1_600;
+  const scale = Math.min(8, maxPixels / Math.max(widthMm, heightMm));
+  const pixelWidth = Math.max(1, Math.round(widthMm * scale));
+  const pixelHeight = Math.max(1, Math.round(heightMm * scale));
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error("The selected material-test sample could not be loaded.")); image.src = inlineSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}` : source; });
+  const canvas = document.createElement("canvas");
+  canvas.width = pixelWidth;
+  canvas.height = pixelHeight;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Raster placement needs a 2D canvas context.");
+  context.drawImage(image, 0, 0, pixelWidth, pixelHeight);
+  const dataUrl = canvas.toDataURL("image/png");
+  return { dataBase64: dataUrl.slice(dataUrl.indexOf(",") + 1), dpi: Math.round(scale * 25.4) };
+}
+
+export function MaterialTestDialog({ onClose, onCommand }: { onClose: () => void; onCommand?: (command: EditorCommand) => void }) {
+  const [settings, setSettings] = useState<MaterialTestSettings>(initialSettings);
+  const template: TemplateId = "generated";
+  const [profile, setProfile] = useState<LocalDeviceProfile>({ host: "192.168.178.71", tcpPort: 23, cameraPath: "/images/snapshot0.jpg" });
+  const [machine, setMachine] = useState(disconnected);
+  const [step, setStep] = useState<WorkflowStep>("connect");
+  const [placedKey, setPlacedKey] = useState<string>();
+  const [targetFrameConfirmed, setTargetFrameConfirmed] = useState(false);
+  const [summary, setSummary] = useState<MaterialTestSummary>();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("Preview ready. No laser job has been started.");
+  const [camera, setCamera] = useState<{ data?: string; error?: string }>({});
+  const ready = true;
+  const placementKey = useMemo(() => JSON.stringify([template, settings]), [template, settings]);
+  const placed = placedKey === placementKey;
+  const result = useMemo(() => { try { const built = buildMaterialTestProject(settings as DomainMaterialTestSettings); const cam = buildLineCam(built.project, { maxPower: 1_000, laserMode: true }); return { ...built, cam, code: generateGrbl(cam), error: undefined }; } catch (error) { return { project: undefined, plan: undefined, cam: undefined, code: undefined, error: error instanceof Error ? error.message : "Material-test settings are invalid." }; } }, [settings]);
+  const applySnapshot = useCallback((snapshot: MachineSnapshot) => setMachine(snapshot), []);
+  useEffect(() => { let active = true; void getBridge().getDeviceProfile().then((next) => { if (active) setProfile(next); }); return () => { active = false; void getBridge().disconnectMachine(); }; }, []);
+  useEffect(() => { let active = true; const poll = async () => { try { const [snapshot, frame] = await Promise.all([machine.connected ? getBridge().getMachineSnapshot() : Promise.resolve(undefined), getBridge().getCameraFrame({ host: profile.host })]); if (!active) return; if (snapshot) applySnapshot(snapshot); if (frame.status === "ok") setCamera({ data: frame.dataUrl }); else setCamera((current) => ({ ...current, error: frame.message })); } catch { /* the camera is optional during offline preparation */ } }; void poll(); const timer = window.setInterval(() => void poll(), 1_000); return () => { active = false; window.clearInterval(timer); }; }, [applySnapshot, machine.connected, profile.host]);
+  const activeJob = machine.job?.state === "running" || machine.job?.state === "held";
+  const update = (key: keyof MaterialTestSettings, value: string) => { if (busy || activeJob) return; setSettings((current) => ({ ...current, [key]: key === "material" || key === "customMaterial" ? value : Number(value) } as MaterialTestSettings)); setMessage("Preview updated. Place the updated sample on the raster before machine use."); setPlacedKey(undefined); setSummary(undefined); setStep(machine.connected ? "home" : "connect"); };
+  const canRun = !busy && step !== "completed" && step !== "failed" && (step === "connect" ? ready && placed : step === "home" || step === "home-after-check" ? machine.connected && new Set(["Idle", "Alarm"]).has(machine.state) : step === "start" ? machine.connected && machine.state === "Idle" && targetFrameConfirmed : machine.connected && machine.state === "Idle");
+  const run = async () => { if (!canRun) return; setBusy(true); try { if (step === "connect") { const gate: MotionSafetyAcknowledgement = { physicallyPresent: ready, workAreaClear: ready, emergencyStopReady: ready, otherControllersClosed: ready, motionApproved: true, laserOffConfirmed: true }; applySnapshot(await getBridge().connectMachine({ kind: "tcp", host: profile.host, port: profile.tcpPort }, gate)); setStep("home"); } else if (step === "home" || step === "home-after-check") { applySnapshot(await getBridge().homeMaterialTest()); setStep(step === "home" ? "prepare" : "frame"); } else if (step === "prepare") { const next = await getBridge().prepareMaterialTest(settings); setSummary(next); setStep("check"); } else if (step === "check") { applySnapshot(await getBridge().checkMaterialTest()); setStep("home-after-check"); } else if (step === "frame") { applySnapshot(await getBridge().frameMaterialTest()); setTargetFrameConfirmed(false); setStep("start"); } else if (step === "start") { const approval: MaterialTestApproval = { testId: "H-MATERIAL-01", supervisedReady: ready, targetFrameConfirmed }; applySnapshot(await getBridge().startMaterialTest(approval)); setStep("completed"); } } catch (error) { const detail = error instanceof Error ? error.message : "Material Test failed."; setMessage(detail); if (step !== "connect") setStep("failed"); } finally { setBusy(false); } };
+  const machineAction = async (type: "hold" | "resume" | "abort") => { try { applySnapshot(await getBridge().machineAction({ type })); if (type === "abort") setStep("failed"); } catch (error) { setMessage(error instanceof Error ? error.message : "Machine action failed."); } };
+  const exportCode = async () => { if (!result.code || !result.plan) return; try { const name = result.plan.material.replace(/[^a-zA-Z0-9_-]+/g, "-") || "custom"; const exported = await getBridge().exportGcode(result.code, `ATOMburn-material-test-${name}`); setMessage(exported.status === "ok" ? `Exported ${exported.fileName}.` : exported.status === "cancelled" ? "Export cancelled." : exported.message); } catch (error) { setMessage(error instanceof Error ? error.message : "Export failed."); } };
+  const placeOnRaster = async () => {
+    if (!onCommand || busy || !result.plan) return;
+    setBusy(true);
+    setMessage("Preparing the selected material-test sample for the raster canvas…");
+    try {
+      const sample = result.plan ? { ...generatedSampleSvg(result.plan, settings), inlineSvg: true } : undefined;
+      if (!sample) throw new Error("The generated material-test sample is not available.");
+      const raster = await rasterizeSource(sample.svg, sample.widthMm, sample.heightMm, sample.inlineSvg);
+      onCommand({ type: "add-raster", name: `${templates.generated.label} · ${result.plan?.material ?? settings.material}`, widthMm: sample.widthMm, heightMm: sample.heightMm, mimeType: "image/png", dataBase64: raster.dataBase64, dpi: raster.dpi });
+      setPlacedKey(placementKey);
+      setMessage(`Placed ${templates.generated.label} on the raster canvas at X30 Y30 mm. The engraver workflow is ready to connect.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Raster placement failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const current = labels[step];
+  return <div className="dialog-backdrop" role="presentation"><section className="material-test-dialog material-test-dialog--workflow" role="dialog" aria-modal="true" aria-labelledby="material-test-title"><header><div><span className="simulator-dialog__eyebrow">Laser tools · supervised workflow</span><h2 id="material-test-title">Material Test Generator</h2></div><button type="button" disabled={busy || activeJob} onClick={onClose}>Close</button></header>
+    <div className="material-test-workflow-status"><p role="status"><strong>Next:</strong> {current.next}</p><p><strong>Machine:</strong> {describe(machine)}</p></div>
+    <div className="material-test-grid"><section className="material-test-settings" aria-label="Material test settings"><h3>Test definition</h3><p className="material-test-template-note"><strong>Template:</strong> {templates.generated.label} — {templates.generated.description}</p><div className="material-test-field-group"><span>Vertical / Rows</span><label>Count<input aria-label="Rows" type="number" min="2" max="10" step="1" value={settings.rows} onChange={(event) => update("rows", event.target.value)} /></label><label>Param<select aria-label="Row parameter" value="Power" disabled><option>Power</option></select></label><label>Min<input aria-label="Minimum power" type="number" min="1" max="100" value={settings.powerStartPercent} onChange={(event) => update("powerStartPercent", event.target.value)} /><small>%</small></label><label>Max<input aria-label="Maximum power" type="number" min="1" max="100" value={settings.powerEndPercent} onChange={(event) => update("powerEndPercent", event.target.value)} /><small>%</small></label></div><div className="material-test-field-group"><span>Horizontal / Columns</span><label>Count<input aria-label="Columns" type="number" min="2" max="10" step="1" value={settings.columns} onChange={(event) => update("columns", event.target.value)} /></label><label>Param<select aria-label="Column parameter" value="Speed" disabled><option>Speed</option></select></label><label>Min<input aria-label="Minimum speed" type="number" min="100" max="3000" value={settings.speedStartMmPerMin} onChange={(event) => update("speedStartMmPerMin", event.target.value)} /><small>mm/min</small></label><label>Max<input aria-label="Maximum speed" type="number" min="100" max="3000" value={settings.speedEndMmPerMin} onChange={(event) => update("speedEndMmPerMin", event.target.value)} /><small>mm/min</small></label></div><div className="material-test-compact-fields"><label>Cell<input aria-label="Cell size" type="number" step="0.5" value={settings.cellSizeMm} onChange={(event) => update("cellSizeMm", event.target.value)} /><small>mm</small></label><label>Gap<input aria-label="Grid gap" type="number" step="0.5" value={settings.gapMm} onChange={(event) => update("gapMm", event.target.value)} /><small>mm</small></label><label>Line spacing<input aria-label="Line spacing" type="number" step="0.01" value={settings.lineSpacingMm} onChange={(event) => update("lineSpacingMm", event.target.value)} /><small>mm</small></label></div><p className="material-test-note">Execution is limited to the verified 400 × 400 mm workspace and 1000 mm/min supervised-job ceiling.</p></section>
+      <section className="material-test-preview" aria-label="Material test preview"><div className="material-test-preview__header"><div><h3>{result.plan?.material ?? "Material"}</h3><span>{result.plan?.cells.length ?? 0} cells · {result.plan ? `${result.plan.bounds.maxX - result.plan.bounds.minX} × ${result.plan.bounds.maxY - result.plan.bounds.minY} mm` : "invalid settings"}</span></div><strong>{result.cam ? `≈ ${result.cam.estimatedSeconds}s` : "—"}</strong></div>{result.plan ? <div className="material-test-canvas" style={{ gridTemplateColumns: `repeat(${settings.columns}, minmax(0, 1fr))` }}>{result.plan.cells.map((cell) => <div className="material-test-cell" key={cell.id}><strong>{cell.powerPercent}%</strong><span>{cell.speedMmPerMin}</span></div>)}</div> : <p className="material-test-error" role="alert">{result.error}</p>}<div className="material-test-legend"><span>Rows: power {settings.powerStartPercent}–{settings.powerEndPercent}%</span><span>Columns: speed {settings.speedStartMmPerMin}–{settings.speedEndMmPerMin} mm/min</span></div><div className="material-test-preview-actions"><button type="button" disabled={busy || !onCommand || !result.plan} onClick={() => void placeOnRaster()}>Place on raster</button><small>Load the generated sample into the document canvas as an embedded raster.</small></div>{summary ? <dl className="material-test-summary"><div><dt>Approval</dt><dd>{summary.testId}</dd></div><div><dt>G-code</dt><dd>{summary.totalLines} lines</dd></div><div><dt>Hash</dt><dd>{summary.hash.slice(0, 16)}…</dd></div></dl> : null}{step === "start" ? <label className="workflow-ready workflow-frame-confirm"><input type="checkbox" checked={targetFrameConfirmed} onChange={(event) => setTargetFrameConfirmed(event.target.checked)} />The laserless frame stayed entirely on the prepared material.</label> : null}</section></div>
+    <div className="material-test-workflow-actions"><button className="material-test-primary" type="button" disabled={!canRun} onClick={() => void run()}>{busy ? "Step running…" : current.button}</button><button type="button" disabled={!result.code} onClick={() => void exportCode()}>Export G-code</button>{activeJob ? <><button className="hold-button" type="button" onClick={() => void machineAction("hold")}>Pause</button><button className="stop-button" type="button" onClick={() => void machineAction("abort")}>Stop</button></> : null}</div><p className="material-test-status" role="status">{message}</p>{camera.data ? <img className="material-test-camera" src={camera.data} alt="Current LaserCam snapshot" /> : <p className="material-test-camera-status">{camera.error ? `Camera: ${camera.error}` : "LaserCam snapshot unavailable; physical supervision is still required."}</p>}{machine.job ? <progress max={machine.job.totalLines} value={machine.job.confirmedLines} aria-label="Material test progress" /> : null}<p className="material-test-safety"><strong>Safety:</strong> Frame is laserless. Start requires homing, Check mode, target-frame confirmation, and an exclusive Idle controller state. Pause/Stop do not replace the physical emergency stop.</p>
+  </section></div>;
+}

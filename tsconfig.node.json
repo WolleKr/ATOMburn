@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node", "electron"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "electron.vite.config.ts",
+    "vite.renderer.config.ts",
+    "apps/desktop/src/main/**/*.ts",
+    "apps/desktop/src/domain/**/*.ts",
+    "apps/desktop/src/grbl/**/*.ts",
+    "apps/desktop/src/machine/**/*.ts",
+    "apps/desktop/src/connectivity/**/*.ts",
+    "apps/desktop/src/importers/**/*.ts",
+    "apps/desktop/src/cam/**/*.ts",
+    "apps/desktop/src/job/**/*.ts",
+    "apps/desktop/src/types/**/*.d.ts",
+    "apps/desktop/src/preload/**/*.ts",
+    "apps/desktop/src/shared/**/*.ts"
+  ]
+}

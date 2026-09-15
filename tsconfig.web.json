@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "apps/desktop/src/renderer/**/*.ts",
+    "apps/desktop/src/renderer/**/*.tsx",
+    "apps/desktop/src/domain/**/*.ts",
+    "apps/desktop/src/editor/**/*.ts",
+    "apps/desktop/src/cam/**/*.ts",
+    "apps/desktop/src/grbl/**/*.ts",
+    "apps/desktop/src/machine/**/*.ts",
+    "apps/desktop/src/preload/index.d.ts",
+    "apps/desktop/src/shared/**/*.ts"
+  ]
+}
